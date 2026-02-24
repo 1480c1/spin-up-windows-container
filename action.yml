@@ -1,0 +1,22 @@
+name: Spin up Windows Container
+description: Action to spin up a Windows container for running successive commands on a self-hosted Windows runner
+author: Christopher Degawa
+
+branding:
+  icon: box
+  color: blue
+
+inputs:
+  image:
+    description: Image to use for the Windows container.
+    required: true
+    default: mcr.microsoft.com/windows/servercore:ltsc2025
+
+outputs:
+  container_id:
+    description: The ID of the Windows container that was spun up
+
+runs:
+  using: node24
+  main: dist/index.js
+  post: dist/post.js

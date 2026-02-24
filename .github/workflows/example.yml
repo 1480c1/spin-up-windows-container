@@ -1,0 +1,62 @@
+name: Run a Windows Container
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  windows-container:
+    runs-on: [self-hosted, Windows, docker]
+    env:
+      GLOBAL_VAR: 'This is a global environment variable'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Spin up Windows container
+        uses: ./
+        with:
+          image: mcr.microsoft.com/windows/server:ltsc2025
+
+      - name: Run command in container
+        shell: powershell-in-container {0}
+        run: |
+          Write-Output "Hello from inside the container!" > hello.txt
+          Get-Content hello.txt
+
+      - name: Test Env variables
+        shell: powershell-in-container {0}
+        env:
+          CC: clang
+          CXX: clang++
+          CFLAGS: -O3
+        run: |
+          Write-Output "Testing environment variables..."
+          Write-Output "CC: $env:CC"
+          Write-Output "CXX: $env:CXX"
+          Write-Output "CFLAGS: $env:CFLAGS"
+          if (-not $env:CC) {
+              Write-Error "CC environment variable is not set!"
+              exit 1
+          }
+
+      - name: Test cmd.exe
+        shell: cmd-in-container {0}
+        run: |
+          echo GLOBAL_VAR=%GLOBAL_VAR%
+          echo This is a test of cmd.exe in the container! > test_cmd.txt
+          type test_cmd.txt
+
+      - name: Test outside container
+        run: |
+          Write-Output "This should run outside the container."
+          Get-Content hello.txt
+          Get-Content test_cmd.txt

@@ -1,0 +1,43 @@
+name: Test action using a go repository
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-action:
+    runs-on: [self-hosted, Windows, docker]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Checkout docker-ci-zap repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          repository: moby/docker-ci-zap
+          path: docker-ci-zap
+
+      - name: Spin up Windows container
+        uses: ./
+        with:
+          image: golang:windowsservercore-ltsc2025
+
+      - name: Build the Go application in the container
+        shell: powershell-in-container {0}
+        env:
+          GOARCH: amd64
+          GOOS: windows
+        run: |
+          Write-Output "Building the Go application inside the container on ${env:GOOS}/${env:GOARCH}..."
+          Set-Location docker-ci-zap
+          go mod init github.com/moby/docker-ci-zap/zap
+          go mod tidy
+          go build -o docker-ci-zap.exe zap.go
