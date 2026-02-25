@@ -78,11 +78,22 @@ const wrapper = (shell, container_id, container_workspace) => {
 setlocal enabledelayedexpansion
 ${gen('%1', `%GITHUB_WORKSPACE%\\%~nx1.${suffix}`)}
 set "ENV_FILE=%TEMP%\\container_env_%RANDOM%_%TIME:~0,2%%TIME:~3,2%%TIME:~6,2%.txt"
+set "FILTERED_ENV_FILE=%TEMP%\\container_env_filtered_%RANDOM%_%TIME:~0,2%%TIME:~3,2%%TIME:~6,2%.txt"
+set "CONTAINER_ENV_FILE=%TEMP%\\container_env_existing_%RANDOM%_%TIME:~0,2%%TIME:~3,2%%TIME:~6,2%.txt"
 set | findstr /v /i "^PATH=" > "%ENV_FILE%"
+docker exec "${container_id}" cmd /D /E:ON /V:OFF /S /C "set" > "%CONTAINER_ENV_FILE%"
+if not errorlevel 1 (
+    for /f "usebackq tokens=1 delims==" %%E in ("%CONTAINER_ENV_FILE%") do (
+        findstr /v /r /i "^%%E=" "%ENV_FILE%" > "%FILTERED_ENV_FILE%"
+        move /y "%FILTERED_ENV_FILE%" "%ENV_FILE%" >nul
+    )
+)
 echo GITHUB_WORKSPACE=${container_workspace} >> "%ENV_FILE%"
 docker exec -i -w "${container_workspace}" --env-file "%ENV_FILE%" "${container_id}" ${command}
 set "EXIT_CODE=%ERRORLEVEL%"
 del "%ENV_FILE%" 2>nul
+del "%FILTERED_ENV_FILE%" 2>nul
+del "%CONTAINER_ENV_FILE%" 2>nul
 exit /b %EXIT_CODE%
 `.replaceAll('\n', '\r\n');
 };

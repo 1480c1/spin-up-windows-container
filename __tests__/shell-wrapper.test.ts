@@ -18,6 +18,12 @@ describe('shell-wrapper', () => {
         expect(script).toContain(
             'docker exec -i -w "C:\\workspace" --env-file "%ENV_FILE%" "container-123"'
         )
+        expect(script).toContain(
+            'docker exec "container-123" cmd /D /E:ON /V:OFF /S /C "set" > "%CONTAINER_ENV_FILE%"'
+        )
+        expect(script).toContain(
+            'for /f "usebackq tokens=1 delims==" %%E in ("%CONTAINER_ENV_FILE%") do ('
+        )
         expect(script).toContain('echo GITHUB_WORKSPACE=C:\\workspace >> "%ENV_FILE%"')
     })
 
