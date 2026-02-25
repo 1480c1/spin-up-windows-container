@@ -35,80 +35,13 @@ import 'string_decoder';
 import 'child_process';
 import 'timers';
 
-async function docker_pull(image) {
-    startGroup(`Pulling Docker image: ${image}`);
-    let image_id = '';
-    const checkOptions = {
-        listeners: {
-            stdout: (data) => {
-                image_id += data.toString();
-            }
-        }
-    };
-    if ((await exec('docker', ['pull', '-q', image], checkOptions)) == 0) {
-        info(`Successfully pulled Docker image: ${image}`);
-        endGroup();
-        return image_id.trim();
-    }
-    // The return code of docker images is 0 even if the image is not found, so we need to check the output to determine if the image exists locally
-    await exec('docker', ['images', '-q', image], checkOptions);
-    image_id = image_id.trim();
-    if (image_id.length > 0) {
-        info(`Using pre-existing Docker image: ${image}`);
-        endGroup();
-        return image_id;
-    }
-    setFailed(`Docker image not found locally: ${image}`);
-    endGroup();
-    return null;
-}
-const container_workspace = 'C:\\workspace';
-async function docker_run(image) {
-    startGroup(`Running Docker container from image: ${image}`);
-    const github_workspace = process.env.GITHUB_WORKSPACE;
-    if (!github_workspace) {
-        setFailed('GITHUB_WORKSPACE environment variable is not set.');
-        endGroup();
-        return '';
-    }
-    let container_id = '';
-    const options = {
-        listeners: {
-            stdout: (data) => {
-                container_id += data.toString();
-            }
-        }
-    };
-    if ((await exec('docker', [
-        'run',
-        '--rm',
-        '-d',
-        '-v',
-        `${github_workspace}:${container_workspace}`,
-        '-w',
-        container_workspace,
-        '-e',
-        `GITHUB_WORKSPACE=${container_workspace}`,
-        image,
-        'powershell',
-        '-Command',
-        'while (1) { Start-Sleep -Seconds 2147483 }'
-    ], options)) !== 0) {
-        setFailed(`Failed to run Docker container from image: ${image}`);
-        endGroup();
-        return '';
-    }
-    container_id = container_id.trim();
-    setOutput('container_id', container_id);
-    endGroup();
-    return container_id;
-}
+const CONTAINER_WORKSPACE = 'C:\\workspace';
 var Shell;
 (function (Shell) {
     Shell["bash"] = "bash --noprofile --norc -eo pipefail {0}";
     Shell["pwsh"] = "pwsh -NoLogo -Command \". '{0}'\"";
     Shell["python"] = "python {0}";
-    Shell["cmd"] = "%ComSpec% /D /E:ON /V:OFF /S /C \"CALL \"{0}\"\"";
+    Shell["cmd"] = "\"%ComSpec%\" /D /E:ON /V:OFF /S /C \"\"CALL \"{0}\"\"\"";
     Shell["powershell"] = "powershell -NoLogo -Command \". '{0}'\"";
 })(Shell || (Shell = {}));
 function get_shell_info(shell) {
@@ -153,10 +86,79 @@ del "%ENV_FILE%" 2>nul
 exit /b %EXIT_CODE%
 `.replaceAll('\n', '\r\n');
 };
+
+async function docker_pull(image) {
+    startGroup(`Pulling Docker image: ${image}`);
+    if ((await exec('docker', ['pull', '-q', image])) == 0) {
+        info(`Successfully pulled Docker image: ${image}`);
+        endGroup();
+        return image;
+    }
+    // The return code of docker images is 0 even if the image is not found,
+    // so we need to check the output to determine if the image exists locally.
+    let image_id = '';
+    const imageCheckOptions = {
+        listeners: {
+            stdout: (data) => {
+                image_id += data.toString();
+            }
+        }
+    };
+    await exec('docker', ['images', '-q', image], imageCheckOptions);
+    image_id = image_id.trim();
+    if (image_id.length > 0) {
+        info(`Using pre-existing Docker image: ${image}`);
+        endGroup();
+        return image;
+    }
+    setFailed(`Docker image not found locally: ${image}`);
+    endGroup();
+    return null;
+}
+async function docker_run(image) {
+    startGroup(`Running Docker container from image: ${image}`);
+    const github_workspace = process.env.GITHUB_WORKSPACE;
+    if (!github_workspace) {
+        setFailed('GITHUB_WORKSPACE environment variable is not set.');
+        endGroup();
+        return '';
+    }
+    let container_id = '';
+    const options = {
+        listeners: {
+            stdout: (data) => {
+                container_id += data.toString();
+            }
+        }
+    };
+    if ((await exec('docker', [
+        'run',
+        '--rm',
+        '-d',
+        '-v',
+        `${github_workspace}:${CONTAINER_WORKSPACE}`,
+        '-w',
+        CONTAINER_WORKSPACE,
+        '-e',
+        `GITHUB_WORKSPACE=${CONTAINER_WORKSPACE}`,
+        image,
+        'powershell',
+        '-Command',
+        'while (1) { Start-Sleep -Seconds 2147483 }'
+    ], options)) !== 0) {
+        setFailed(`Failed to run Docker container from image: ${image}`);
+        endGroup();
+        return '';
+    }
+    container_id = container_id.trim();
+    setOutput('container_id', container_id);
+    endGroup();
+    return container_id;
+}
 async function setup_container_wrappers(path_dir, container_id) {
     startGroup(`Setting up wrapper with ID: ${container_id}`);
     for (const [shell_name, shell_command] of Object.entries(Shell)) {
-        const wrapper_content = wrapper(shell_command, container_id, container_workspace);
+        const wrapper_content = wrapper(shell_command, container_id, CONTAINER_WORKSPACE);
         const wrapper_path = path.join(path_dir, `${shell_name}-in-container.cmd`);
         info(`Creating wrapper for ${shell_name} at ${wrapper_path} with ${shell_command}`);
         fs.writeFileSync(wrapper_path, wrapper_content);
@@ -198,6 +200,9 @@ async function run() {
             return;
         }
         const container_id = await docker_run(final_image);
+        if (!container_id) {
+            return;
+        }
         fs.writeFileSync(container_id_store, container_id);
         await setup_container_wrappers(path_dir, container_id);
     }

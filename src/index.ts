@@ -3,36 +3,36 @@ import * as exec from '@actions/exec'
 import * as fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { CONTAINER_WORKSPACE, Shell, wrapper } from './shell-wrapper.js'
 
 async function docker_pull(image: string): Promise<string | null> {
     core.startGroup(`Pulling Docker image: ${image}`)
+    if ((await exec.exec('docker', ['pull', '-q', image])) == 0) {
+        core.info(`Successfully pulled Docker image: ${image}`)
+        core.endGroup()
+        return image
+    }
+    // The return code of docker images is 0 even if the image is not found,
+    // so we need to check the output to determine if the image exists locally.
     let image_id = ''
-    const checkOptions: exec.ExecOptions = {
+    const imageCheckOptions: exec.ExecOptions = {
         listeners: {
             stdout: (data: Buffer) => {
                 image_id += data.toString()
             }
         }
     }
-    if ((await exec.exec('docker', ['pull', '-q', image], checkOptions)) == 0) {
-        core.info(`Successfully pulled Docker image: ${image}`)
-        core.endGroup()
-        return image_id.trim()
-    }
-    // The return code of docker images is 0 even if the image is not found, so we need to check the output to determine if the image exists locally
-    await exec.exec('docker', ['images', '-q', image], checkOptions)
+    await exec.exec('docker', ['images', '-q', image], imageCheckOptions)
     image_id = image_id.trim()
     if (image_id.length > 0) {
         core.info(`Using pre-existing Docker image: ${image}`)
         core.endGroup()
-        return image_id
+        return image
     }
     core.setFailed(`Docker image not found locally: ${image}`)
     core.endGroup()
     return null
 }
-
-const container_workspace = 'C:\\workspace'
 
 async function docker_run(image: string): Promise<string> {
     core.startGroup(`Running Docker container from image: ${image}`)
@@ -58,11 +58,11 @@ async function docker_run(image: string): Promise<string> {
                 '--rm',
                 '-d',
                 '-v',
-                `${github_workspace}:${container_workspace}`,
+                `${github_workspace}:${CONTAINER_WORKSPACE}`,
                 '-w',
-                container_workspace,
+                CONTAINER_WORKSPACE,
                 '-e',
-                `GITHUB_WORKSPACE=${container_workspace}`,
+                `GITHUB_WORKSPACE=${CONTAINER_WORKSPACE}`,
                 image,
                 'powershell',
                 '-Command',
@@ -81,66 +81,10 @@ async function docker_run(image: string): Promise<string> {
     return container_id
 }
 
-enum Shell {
-    bash = 'bash --noprofile --norc -eo pipefail {0}',
-    pwsh = 'pwsh -NoLogo -Command ". \'{0}\'"',
-    python = 'python {0}',
-    cmd = '%ComSpec% /D /E:ON /V:OFF /S /C "CALL "{0}""',
-    powershell = 'powershell -NoLogo -Command ". \'{0}\'"'
-}
-
-type ScriptGen = (file: string, out: string) => string
-type ScriptSuffix = string
-type ShellInfo = [ScriptGen, ScriptSuffix]
-
-function get_shell_info(shell: Shell): ShellInfo {
-    const defaultGen: ScriptGen = (file: string, out: string): string => {
-        return `type "${file}" > "${out}"`
-    }
-    switch (shell) {
-        case Shell.bash:
-            return [defaultGen, 'sh']
-        case Shell.pwsh:
-        case Shell.powershell:
-            return [
-                (file: string, out: string): string => {
-                    return `
-(
-    echo $ErrorActionPreference = 'stop'
-    type "${file}"
-    echo if ((Test-Path -LiteralPath variable:\\LASTEXITCODE^)^) { exit $LASTEXITCODE }
-) > "${out}"`
-                },
-                'ps1'
-            ]
-        case Shell.python:
-            return [defaultGen, 'py']
-        case Shell.cmd:
-            return [defaultGen, 'cmd']
-    }
-}
-
-const wrapper = (shell: Shell, container_id: string, container_workspace: string): string => {
-    const [gen, suffix] = get_shell_info(shell)
-    const command = shell.replace('{0}', `${container_workspace}\\%~nx1.${suffix}`)
-    return `
-@echo off
-setlocal enabledelayedexpansion
-${gen('%1', `%GITHUB_WORKSPACE%\\%~nx1.${suffix}`)}
-set "ENV_FILE=%TEMP%\\container_env_%RANDOM%_%TIME:~0,2%%TIME:~3,2%%TIME:~6,2%.txt"
-set | findstr /v /i "^PATH=" > "%ENV_FILE%"
-echo GITHUB_WORKSPACE=${container_workspace} >> "%ENV_FILE%"
-docker exec -i -w "${container_workspace}" --env-file "%ENV_FILE%" "${container_id}" ${command}
-set "EXIT_CODE=%ERRORLEVEL%"
-del "%ENV_FILE%" 2>nul
-exit /b %EXIT_CODE%
-`.replaceAll('\n', '\r\n')
-}
-
 async function setup_container_wrappers(path_dir: string, container_id: string): Promise<void> {
     core.startGroup(`Setting up wrapper with ID: ${container_id}`)
     for (const [shell_name, shell_command] of Object.entries(Shell)) {
-        const wrapper_content = wrapper(shell_command, container_id, container_workspace)
+        const wrapper_content = wrapper(shell_command, container_id, CONTAINER_WORKSPACE)
         const wrapper_path = path.join(path_dir, `${shell_name}-in-container.cmd`)
         core.info(`Creating wrapper for ${shell_name} at ${wrapper_path} with ${shell_command}`)
         fs.writeFileSync(wrapper_path, wrapper_content)
@@ -189,6 +133,9 @@ async function run(): Promise<void> {
             return
         }
         const container_id = await docker_run(final_image)
+        if (!container_id) {
+            return
+        }
 
         fs.writeFileSync(container_id_store, container_id)
         await setup_container_wrappers(path_dir, container_id)

@@ -46,7 +46,7 @@ export default [
 
             parserOptions: {
                 projectService: {
-                    allowDefaultProject: ['__fixtures__/*.ts', '__tests__/*.ts']
+                    allowDefaultProject: ['__fixtures__/*.ts']
                 },
                 tsconfigRootDir: import.meta.dirname
             }

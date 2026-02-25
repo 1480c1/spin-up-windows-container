@@ -17,7 +17,7 @@
         "package": "npx rimraf ./dist && npx rollup --config rollup.config.ts --configPlugin @rollup/plugin-typescript",
         "package:watch": "npm run package -- --watch",
         "all": "npm run format:write && npm run lint && npm run package",
-        "test": "npx jest"
+        "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js"
     },
     "license": "MIT",
     "bugs": {
