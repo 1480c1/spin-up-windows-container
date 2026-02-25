@@ -27,6 +27,7 @@ export function get_shell_info(shell: Shell): ShellInfo {
 (
     echo $ErrorActionPreference = 'stop'
     type "${file}"
+    echo.
     echo if ((Test-Path -LiteralPath variable:\\LASTEXITCODE^)^) { exit $LASTEXITCODE }
 ) > "${out}"`
                 },
