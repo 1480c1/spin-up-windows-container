@@ -1,6 +1,6 @@
 {
     "name": "spin-up-windows-container",
-    "version": "0.0.1",
+    "version": "1.0.0",
     "description": "Action to spin up a Windows container for running successive commands on a self-hosted Windows runner",
     "author": "Christopher Degawa <ccom@randomderp.com>",
     "repository": {
