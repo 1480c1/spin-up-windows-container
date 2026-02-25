@@ -4,7 +4,7 @@ export enum Shell {
     bash = 'bash --noprofile --norc -eo pipefail {0}',
     pwsh = 'pwsh -NoLogo -Command ". \'{0}\'"',
     python = 'python {0}',
-    cmd = '"%ComSpec%" /D /E:ON /V:OFF /S /C ""CALL "{0}"""',
+    cmd = '%ComSpec% /D /E:ON /V:OFF /S /C "{0}"',
     powershell = 'powershell -NoLogo -Command ". \'{0}\'"'
 }
 

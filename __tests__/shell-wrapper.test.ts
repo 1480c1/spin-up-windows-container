@@ -37,8 +37,7 @@ describe('shell-wrapper', () => {
             shellWrapper.CONTAINER_WORKSPACE
         )
 
-        expect(script).toContain(
-            '"%ComSpec%" /D /E:ON /V:OFF /S /C ""CALL "C:\\workspace\\%~nx1.cmd"""'
-        )
+        expect(script).toContain('%ComSpec% /D /E:ON /V:OFF /S /C "C:\\workspace\\%~nx1.cmd"')
+        expect(script).not.toContain('.cmd\\"')
     })
 })

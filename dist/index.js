@@ -41,7 +41,7 @@ var Shell;
     Shell["bash"] = "bash --noprofile --norc -eo pipefail {0}";
     Shell["pwsh"] = "pwsh -NoLogo -Command \". '{0}'\"";
     Shell["python"] = "python {0}";
-    Shell["cmd"] = "\"%ComSpec%\" /D /E:ON /V:OFF /S /C \"\"CALL \"{0}\"\"\"";
+    Shell["cmd"] = "%ComSpec% /D /E:ON /V:OFF /S /C \"{0}\"";
     Shell["powershell"] = "powershell -NoLogo -Command \". '{0}'\"";
 })(Shell || (Shell = {}));
 function get_shell_info(shell) {
