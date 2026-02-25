@@ -60,3 +60,4 @@ jobs:
           Write-Output "This should run outside the container."
           Get-Content hello.txt
           Get-Content test_cmd.txt
+          Get-Content $(Get-Command -Name "pwsh-in-container").Source
