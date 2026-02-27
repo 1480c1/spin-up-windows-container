@@ -7,11 +7,14 @@ beforeAll(async () => {
 })
 
 describe('shell-wrapper', () => {
+    const mockScriptDir = 'C:\\temp\\container-wrapper'
+
     test('builds a wrapper script with expected docker exec command and CRLF line endings', () => {
         const script = shellWrapper.wrapper(
             shellWrapper.Shell.powershell,
             'container-123',
-            shellWrapper.CONTAINER_WORKSPACE
+            shellWrapper.CONTAINER_WORKSPACE,
+            mockScriptDir
         )
 
         expect(script).toContain('\r\n')
@@ -19,12 +22,8 @@ describe('shell-wrapper', () => {
             'docker exec -i -w "C:\\workspace" --env-file "%ENV_FILE%" "container-123"'
         )
         expect(script).toContain(
-            'docker exec "container-123" cmd /D /E:ON /V:OFF /S /C "set" > "%CONTAINER_ENV_FILE%"'
+            `powershell -NoProfile -ExecutionPolicy Bypass -File "${mockScriptDir}\\${shellWrapper.ENV_SCRIPT_NAME}"`
         )
-        expect(script).toContain(
-            'for /f "usebackq tokens=1 delims==" %%E in ("%CONTAINER_ENV_FILE%") do ('
-        )
-        expect(script).toContain('echo GITHUB_WORKSPACE=C:\\workspace >> "%ENV_FILE%"')
     })
 
     test('returns powershell shell info with ps1 suffix and LASTEXITCODE forwarding', () => {
@@ -40,10 +39,19 @@ describe('shell-wrapper', () => {
         const script = shellWrapper.wrapper(
             shellWrapper.Shell.cmd,
             'container-xyz',
-            shellWrapper.CONTAINER_WORKSPACE
+            shellWrapper.CONTAINER_WORKSPACE,
+            mockScriptDir
         )
 
         expect(script).toContain('%ComSpec% /D /E:ON /V:OFF /S /C "C:\\workspace\\%~nx1.cmd"')
         expect(script).not.toContain('.cmd\\"')
+    })
+
+    test('generates PowerShell environment script with path conversion', () => {
+        const script = shellWrapper.env_script()
+
+        expect(script).toContain('\r\n')
+        expect(script).toContain('[regex]::Escape($oldPath)')
+        expect(script).toContain('GITHUB_WORKSPACE=${container_workspace}')
     })
 })
