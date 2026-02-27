@@ -1,5 +1,6 @@
 import { s as setFailed, g as getInput, w as warning, i as info, e as exec, a as startGroup, b as endGroup, c as setOutput, d as addPath } from './core-lMgWmY_i.js';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import 'os';
@@ -199,6 +200,9 @@ async function docker_run(image) {
     if ((await exec('docker', [
         'run',
         '--rm',
+        // Set the --cpus flag since hyper-v isolation defaults to only "exposing" 2 CPUs to the container.
+        '--cpus',
+        os.availableParallelism().toString(),
         '-d',
         '-v',
         `${github_workspace}:${CONTAINER_WORKSPACE}`,

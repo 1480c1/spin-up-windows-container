@@ -1,6 +1,7 @@
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import {
@@ -62,6 +63,9 @@ async function docker_run(image: string): Promise<string> {
             [
                 'run',
                 '--rm',
+                // Set the --cpus flag since hyper-v isolation defaults to only "exposing" 2 CPUs to the container.
+                '--cpus',
+                os.availableParallelism().toString(),
                 '-d',
                 '-v',
                 `${github_workspace}:${CONTAINER_WORKSPACE}`,
