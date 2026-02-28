@@ -203,6 +203,9 @@ async function docker_run(image) {
         // Set the --cpus flag since hyper-v isolation defaults to only "exposing" 2 CPUs to the container.
         '--cpus',
         os.availableParallelism().toString(),
+        // Set memory as well, since it defaults to only 1GB. Limit to 80% of total memory to leave some overhead for the host. Might need to adjust this later.
+        '--memory',
+        Math.round(os.totalmem() * 0.8).toString(),
         '-d',
         '-v',
         `${github_workspace}:${CONTAINER_WORKSPACE}`,
