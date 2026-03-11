@@ -12,6 +12,54 @@ import {
     wrapper
 } from './shell-wrapper.js'
 
+async function can_use_proc_isolation(imageName: string): Promise<boolean> {
+    try {
+        // 1. Get Host Build Version via PowerShell
+        const hostBuildStr = os.release() // produces a string in the form of '10.0.26200', we need the 3rd segment for the build number
+        const hostBuild = parseInt(hostBuildStr.split('.')[2])
+
+        // 2. Get Image OS Version via Docker Inspect
+        let imageOsVersion = ''
+        await exec.exec('docker', ['inspect', '--format', '{{.OsVersion}}', imageName], {
+            listeners: {
+                stdout: (data) => {
+                    imageOsVersion += data.toString()
+                }
+            }
+        })
+
+        // Image version format is usually "10.0.26100.4061" - we need the 3rd segment
+        const imageBuild = parseInt(imageOsVersion.split('.')[2])
+
+        core.debug(`Host Build: ${hostBuild} | Image Build: ${imageBuild}`)
+
+        // 3. Compatibility Logic
+        if (hostBuild === imageBuild) {
+            core.debug('Perfect match. Process isolation is supported.')
+            return true
+        }
+
+        if (hostBuild > imageBuild) {
+            // Down-level compatibility requires Windows 11 (22000+) or Server 2022 (20348+)
+            if (hostBuild >= 20348) {
+                core.debug('Host supports down-level process isolation.')
+                return true
+            }
+            core.warning(
+                'Host is older than Windows 11/Server 2022. Exact version match required for process isolation. Expect performance degradation if running this image, and some features may not work as expected.'
+            )
+            return false
+        }
+
+        core.error(
+            'Image build is newer than Host build. Running this image is not supported. Will attempt to run it, but expect it to fail.'
+        )
+    } catch (error) {
+        core.setFailed(`Failed to inspect image: ${error instanceof Error ? error.message : error}`)
+    }
+    return false
+}
+
 async function docker_pull(image: string): Promise<string | null> {
     core.startGroup(`Pulling Docker image: ${image}`)
     if ((await exec.exec('docker', ['pull', '-q', image])) == 0) {
@@ -57,33 +105,32 @@ async function docker_run(image: string): Promise<string> {
             }
         }
     }
-    if (
-        (await exec.exec(
-            'docker',
-            [
-                'run',
-                '--rm',
-                // Set the --cpus flag since hyper-v isolation defaults to only "exposing" 2 CPUs to the container.
-                '--cpus',
-                os.availableParallelism().toString(),
-                // Set memory as well, since it defaults to only 1GB. Limit to 80% of total memory to leave some overhead for the host. Might need to adjust this later.
-                '--memory',
-                Math.round(os.totalmem() * 0.8).toString(),
-                '-d',
-                '-v',
-                `${github_workspace}:${CONTAINER_WORKSPACE}`,
-                '-w',
-                CONTAINER_WORKSPACE,
-                '-e',
-                `GITHUB_WORKSPACE=${CONTAINER_WORKSPACE}`,
-                image,
-                'powershell',
-                '-Command',
-                'while (1) { Start-Sleep -Seconds 2147483 }'
-            ],
-            options
-        )) !== 0
-    ) {
+
+    const isolation = (await can_use_proc_isolation(image)) ? 'process' : 'hyperv'
+    core.info(`Using ${isolation} isolation for container.`)
+
+    const args = [
+        'run',
+        '--rm',
+        `--isolation=${isolation}`,
+        // Set the --cpus flag since hyper-v isolation defaults to only "exposing" 2 CPUs to the container.
+        ...(isolation === 'hyperv' ? ['--cpus', os.availableParallelism().toString()] : []),
+        // Set memory as well, since it defaults to only 1GB. Limit to 80% of total memory to leave some overhead for the host. Might need to adjust this later.
+        ...(isolation === 'hyperv' ? ['--memory', Math.round(os.totalmem() * 0.8).toString()] : []),
+        '-d',
+        '-v',
+        `${github_workspace}:${CONTAINER_WORKSPACE}`,
+        '-w',
+        CONTAINER_WORKSPACE,
+        '-e',
+        `GITHUB_WORKSPACE=${CONTAINER_WORKSPACE}`,
+        image,
+        'powershell',
+        '-Command',
+        'while (1) { Start-Sleep -Seconds 2147483 }'
+    ]
+
+    if ((await exec.exec('docker', args, options)) !== 0) {
         core.setFailed(`Failed to run Docker container from image: ${image}`)
         core.endGroup()
         return ''
