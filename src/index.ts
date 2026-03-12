@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 import {
     close_docker_client,
     create_and_start_container,
@@ -13,13 +14,7 @@ import {
     stop_container,
     type ActionDockerClient
 } from './docker-client.js'
-import {
-    CONTAINER_WORKSPACE,
-    ENV_SCRIPT_NAME,
-    Shell,
-    env_script,
-    wrapper
-} from './shell-wrapper.js'
+import { CONTAINER_WORKSPACE, Shell, wrapper } from './shell-wrapper.js'
 
 async function can_use_proc_isolation(
     client: ActionDockerClient,
@@ -121,15 +116,18 @@ async function docker_run(client: ActionDockerClient, image: string): Promise<st
 async function setup_container_wrappers(path_dir: string, container_id: string): Promise<void> {
     core.startGroup(`Setting up wrapper with ID: ${container_id}`)
 
-    // Generate the PowerShell environment script
-    const env_script_content = env_script()
-    const env_script_path = path.join(path_dir, ENV_SCRIPT_NAME)
-    core.info(`Creating environment generation script at ${env_script_path}`)
-    fs.writeFileSync(env_script_path, env_script_content)
+    const runtime_dir = path.dirname(fileURLToPath(import.meta.url))
+    const helper_script_path = path.join(runtime_dir, 'container-exec.js')
 
     // Generate wrapper scripts for each shell
     for (const [shell_name, shell_command] of Object.entries(Shell)) {
-        const wrapper_content = wrapper(shell_command, container_id, CONTAINER_WORKSPACE, path_dir)
+        const wrapper_content = wrapper(
+            shell_name,
+            shell_command,
+            container_id,
+            CONTAINER_WORKSPACE,
+            helper_script_path
+        )
         const wrapper_path = path.join(path_dir, `${shell_name}-in-container.cmd`)
         core.info(`Creating wrapper for ${shell_name} at ${wrapper_path} with ${shell_command}`)
         fs.writeFileSync(wrapper_path, wrapper_content)

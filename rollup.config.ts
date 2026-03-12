@@ -11,7 +11,8 @@ import { defineConfig } from 'rollup'
 const config = defineConfig({
     input: {
         index: 'src/index.ts',
-        post: 'src/post.ts'
+        post: 'src/post.ts',
+        'container-exec': 'src/container-exec.ts'
     },
     output: [
         {
