@@ -1,3 +1,5 @@
+import { describe, expect, test, beforeAll } from '@jest/globals'
+
 type ShellWrapperModule = typeof import('../src/shell-wrapper.js')
 
 let shellWrapper: ShellWrapperModule
