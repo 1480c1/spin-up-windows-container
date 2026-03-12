@@ -1,6 +1,6 @@
 import { Writable } from 'node:stream';
 import process from 'node:process';
-import { c as create_docker_client, a as close_docker_client } from './docker-client-fzX3AnK-.js';
+import { c as create_docker_client, a as close_docker_client } from './docker-client-B4BHouVy.js';
 import 'node:net';
 import 'node:fs';
 import 'node:path';
@@ -23,6 +23,7 @@ import 'node:console';
 import 'node:dns';
 import 'string_decoder';
 import 'node:stream/web';
+import 'node:fs/promises';
 
 function parse_args(argv) {
     const args = new Map();

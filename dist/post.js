@@ -1,8 +1,8 @@
-import { w as warning, i as info, a as startGroup, e as endGroup } from './core-xb5ZzOmp.js';
+import { w as warning, i as info, a as startGroup, e as endGroup } from './core-CxI4fOvG.js';
 import path from 'node:path';
 import process from 'node:process';
 import fs__default from 'node:fs';
-import { c as create_docker_client, s as stop_container, a as close_docker_client } from './docker-client-fzX3AnK-.js';
+import { c as create_docker_client, s as stop_container, a as close_docker_client } from './docker-client-B4BHouVy.js';
 import 'os';
 import 'crypto';
 import 'fs';
@@ -37,6 +37,7 @@ import 'node:async_hooks';
 import 'node:console';
 import 'node:dns';
 import 'node:stream/web';
+import 'node:fs/promises';
 
 async function run() {
     let dockerClient = null;
