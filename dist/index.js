@@ -1,4 +1,4 @@
-import { s as setFailed, g as getInput, w as warning, i as info, e as exec, a as startGroup, b as endGroup, c as setOutput, d as addPath, f as debug, h as error } from './core-DLBmXFts.js';
+import { s as setFailed, g as getInput, c as create_docker_client, w as warning, i as info, a as stop_container, b as close_docker_client, d as startGroup, p as pull_image, e as endGroup, f as image_exists_locally, h as create_and_start_container, j as setOutput, k as addPath, l as get_image_os_version, m as debug, n as error } from './docker-client-eesSGNkd.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import path from 'node:path';
@@ -14,8 +14,12 @@ import 'tls';
 import 'events';
 import 'assert';
 import 'util';
-import 'node:assert';
+import 'string_decoder';
+import 'child_process';
+import 'timers';
 import 'node:net';
+import 'node:tls';
+import 'node:assert';
 import 'node:http';
 import 'node:stream';
 import 'node:buffer';
@@ -23,7 +27,6 @@ import 'node:util';
 import 'node:querystring';
 import 'node:events';
 import 'node:diagnostics_channel';
-import 'node:tls';
 import 'node:zlib';
 import 'node:perf_hooks';
 import 'node:util/types';
@@ -32,9 +35,7 @@ import 'node:url';
 import 'node:async_hooks';
 import 'node:console';
 import 'node:dns';
-import 'string_decoder';
-import 'child_process';
-import 'timers';
+import 'node:stream/web';
 
 const CONTAINER_WORKSPACE = 'C:\\workspace';
 const ENV_SCRIPT_NAME = 'generate-container-env.ps1';
@@ -153,20 +154,13 @@ exit /b %EXIT_CODE%
 `.replaceAll('\n', '\r\n');
 };
 
-async function can_use_proc_isolation(imageName) {
+async function can_use_proc_isolation(client, imageName) {
     try {
         // 1. Get Host Build Version via PowerShell
         const hostBuildStr = os.release(); // produces a string in the form of '10.0.26200', we need the 3rd segment for the build number
         const hostBuild = parseInt(hostBuildStr.split('.')[2]);
-        // 2. Get Image OS Version via Docker Inspect
-        let imageOsVersion = '';
-        await exec('docker', ['inspect', '--format', '{{.OsVersion}}', imageName], {
-            listeners: {
-                stdout: (data) => {
-                    imageOsVersion += data.toString();
-                }
-            }
-        });
+        // 2. Get Image OS Version via Docker API
+        const imageOsVersion = await get_image_os_version(client, imageName);
         // Image version format is usually "10.0.26100.4061" - we need the 3rd segment
         const imageBuild = parseInt(imageOsVersion.split('.')[2]);
         debug(`Host Build: ${hostBuild} | Image Build: ${imageBuild}`);
@@ -191,26 +185,18 @@ async function can_use_proc_isolation(imageName) {
     }
     return false;
 }
-async function docker_pull(image) {
+async function docker_pull(client, image) {
     startGroup(`Pulling Docker image: ${image}`);
-    if ((await exec('docker', ['pull', '-q', image])) == 0) {
+    try {
+        await pull_image(client, image);
         info(`Successfully pulled Docker image: ${image}`);
         endGroup();
         return image;
     }
-    // The return code of docker images is 0 even if the image is not found,
-    // so we need to check the output to determine if the image exists locally.
-    let image_id = '';
-    const imageCheckOptions = {
-        listeners: {
-            stdout: (data) => {
-                image_id += data.toString();
-            }
-        }
-    };
-    await exec('docker', ['images', '-q', image], imageCheckOptions);
-    image_id = image_id.trim();
-    if (image_id.length > 0) {
+    catch {
+        // Continue to local image fallback check.
+    }
+    if (await image_exists_locally(client, image)) {
         info(`Using pre-existing Docker image: ${image}`);
         endGroup();
         return image;
@@ -219,7 +205,7 @@ async function docker_pull(image) {
     endGroup();
     return null;
 }
-async function docker_run(image) {
+async function docker_run(client, image) {
     startGroup(`Running Docker container from image: ${image}`);
     const github_workspace = process.env.GITHUB_WORKSPACE;
     if (!github_workspace) {
@@ -227,45 +213,19 @@ async function docker_run(image) {
         endGroup();
         return '';
     }
-    let container_id = '';
-    const options = {
-        listeners: {
-            stdout: (data) => {
-                container_id += data.toString();
-            }
-        }
-    };
-    const isolation = (await can_use_proc_isolation(image)) ? 'process' : 'hyperv';
+    const isolation = (await can_use_proc_isolation(client, image)) ? 'process' : 'hyperv';
     info(`Using ${isolation} isolation for container.`);
-    const args = [
-        'run',
-        '--rm',
-        `--isolation=${isolation}`,
-        // Set the --cpus flag since hyper-v isolation defaults to only "exposing" 2 CPUs to the container.
-        ...(isolation === 'hyperv' ? ['--cpus', os.availableParallelism().toString()] : []),
-        // Set memory as well, since it defaults to only 1GB. Limit to 80% of total memory to leave some overhead for the host. Might need to adjust this later.
-        ...(isolation === 'hyperv' ? ['--memory', Math.round(os.totalmem() * 0.8).toString()] : []),
-        '-d',
-        '-v',
-        `${github_workspace}:${CONTAINER_WORKSPACE}`,
-        '-w',
-        CONTAINER_WORKSPACE,
-        '-e',
-        `GITHUB_WORKSPACE=${CONTAINER_WORKSPACE}`,
-        image,
-        'powershell',
-        '-Command',
-        'while (1) { Start-Sleep -Seconds 2147483 }'
-    ];
-    if ((await exec('docker', args, options)) !== 0) {
+    try {
+        const container_id = await create_and_start_container(client, image, github_workspace, CONTAINER_WORKSPACE, isolation, os.availableParallelism(), Math.round(os.totalmem() * 0.8));
+        setOutput('container_id', container_id);
+        endGroup();
+        return container_id;
+    }
+    catch {
         setFailed(`Failed to run Docker container from image: ${image}`);
         endGroup();
         return '';
     }
-    container_id = container_id.trim();
-    setOutput('container_id', container_id);
-    endGroup();
-    return container_id;
 }
 async function setup_container_wrappers(path_dir, container_id) {
     startGroup(`Setting up wrapper with ID: ${container_id}`);
@@ -285,6 +245,7 @@ async function setup_container_wrappers(path_dir, container_id) {
     endGroup();
 }
 async function run() {
+    let dockerClient = null;
     try {
         if (process.platform !== 'win32') {
             setFailed('This action can only be run on Windows runners.');
@@ -300,6 +261,7 @@ async function run() {
             setFailed('Image name is required.');
             return;
         }
+        dockerClient = await create_docker_client();
         const path_dir = path.join(temp_dir, 'container-wrapper');
         fs.mkdirSync(path_dir, { recursive: true });
         const container_id_store = path.join(path_dir, '.container_id');
@@ -308,16 +270,16 @@ async function run() {
             const container_id = fs.readFileSync(container_id_store, 'utf-8').trim();
             if (container_id) {
                 info(`Attempting to stop existing container with ID: ${container_id}`);
-                await exec('docker', ['stop', '-t', '10', container_id]);
+                await stop_container(dockerClient, container_id, 10);
             }
             fs.rmSync(path_dir, { recursive: true, force: true });
             fs.mkdirSync(path_dir, { recursive: true });
         }
-        const final_image = await docker_pull(image);
+        const final_image = await docker_pull(dockerClient, image);
         if (!final_image) {
             return;
         }
-        const container_id = await docker_run(final_image);
+        const container_id = await docker_run(dockerClient, final_image);
         if (!container_id) {
             return;
         }
@@ -330,6 +292,11 @@ async function run() {
         }
         else {
             setFailed(String(error));
+        }
+    }
+    finally {
+        if (dockerClient) {
+            await close_docker_client(dockerClient);
         }
     }
 }

@@ -1,9 +1,18 @@
 import * as core from '@actions/core'
-import * as exec from '@actions/exec'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
+import {
+    close_docker_client,
+    create_and_start_container,
+    create_docker_client,
+    get_image_os_version,
+    image_exists_locally,
+    pull_image,
+    stop_container,
+    type ActionDockerClient
+} from './docker-client.js'
 import {
     CONTAINER_WORKSPACE,
     ENV_SCRIPT_NAME,
@@ -12,21 +21,17 @@ import {
     wrapper
 } from './shell-wrapper.js'
 
-async function can_use_proc_isolation(imageName: string): Promise<boolean> {
+async function can_use_proc_isolation(
+    client: ActionDockerClient,
+    imageName: string
+): Promise<boolean> {
     try {
         // 1. Get Host Build Version via PowerShell
         const hostBuildStr = os.release() // produces a string in the form of '10.0.26200', we need the 3rd segment for the build number
         const hostBuild = parseInt(hostBuildStr.split('.')[2])
 
-        // 2. Get Image OS Version via Docker Inspect
-        let imageOsVersion = ''
-        await exec.exec('docker', ['inspect', '--format', '{{.OsVersion}}', imageName], {
-            listeners: {
-                stdout: (data) => {
-                    imageOsVersion += data.toString()
-                }
-            }
-        })
+        // 2. Get Image OS Version via Docker API
+        const imageOsVersion = await get_image_os_version(client, imageName)
 
         // Image version format is usually "10.0.26100.4061" - we need the 3rd segment
         const imageBuild = parseInt(imageOsVersion.split('.')[2])
@@ -60,26 +65,18 @@ async function can_use_proc_isolation(imageName: string): Promise<boolean> {
     return false
 }
 
-async function docker_pull(image: string): Promise<string | null> {
+async function docker_pull(client: ActionDockerClient, image: string): Promise<string | null> {
     core.startGroup(`Pulling Docker image: ${image}`)
-    if ((await exec.exec('docker', ['pull', '-q', image])) == 0) {
+    try {
+        await pull_image(client, image)
         core.info(`Successfully pulled Docker image: ${image}`)
         core.endGroup()
         return image
+    } catch {
+        // Continue to local image fallback check.
     }
-    // The return code of docker images is 0 even if the image is not found,
-    // so we need to check the output to determine if the image exists locally.
-    let image_id = ''
-    const imageCheckOptions: exec.ExecOptions = {
-        listeners: {
-            stdout: (data: Buffer) => {
-                image_id += data.toString()
-            }
-        }
-    }
-    await exec.exec('docker', ['images', '-q', image], imageCheckOptions)
-    image_id = image_id.trim()
-    if (image_id.length > 0) {
+
+    if (await image_exists_locally(client, image)) {
         core.info(`Using pre-existing Docker image: ${image}`)
         core.endGroup()
         return image
@@ -89,7 +86,7 @@ async function docker_pull(image: string): Promise<string | null> {
     return null
 }
 
-async function docker_run(image: string): Promise<string> {
+async function docker_run(client: ActionDockerClient, image: string): Promise<string> {
     core.startGroup(`Running Docker container from image: ${image}`)
     const github_workspace = process.env.GITHUB_WORKSPACE
     if (!github_workspace) {
@@ -97,48 +94,28 @@ async function docker_run(image: string): Promise<string> {
         core.endGroup()
         return ''
     }
-    let container_id = ''
-    const options: exec.ExecOptions = {
-        listeners: {
-            stdout: (data: Buffer) => {
-                container_id += data.toString()
-            }
-        }
-    }
 
-    const isolation = (await can_use_proc_isolation(image)) ? 'process' : 'hyperv'
+    const isolation = (await can_use_proc_isolation(client, image)) ? 'process' : 'hyperv'
     core.info(`Using ${isolation} isolation for container.`)
 
-    const args = [
-        'run',
-        '--rm',
-        `--isolation=${isolation}`,
-        // Set the --cpus flag since hyper-v isolation defaults to only "exposing" 2 CPUs to the container.
-        ...(isolation === 'hyperv' ? ['--cpus', os.availableParallelism().toString()] : []),
-        // Set memory as well, since it defaults to only 1GB. Limit to 80% of total memory to leave some overhead for the host. Might need to adjust this later.
-        ...(isolation === 'hyperv' ? ['--memory', Math.round(os.totalmem() * 0.8).toString()] : []),
-        '-d',
-        '-v',
-        `${github_workspace}:${CONTAINER_WORKSPACE}`,
-        '-w',
-        CONTAINER_WORKSPACE,
-        '-e',
-        `GITHUB_WORKSPACE=${CONTAINER_WORKSPACE}`,
-        image,
-        'powershell',
-        '-Command',
-        'while (1) { Start-Sleep -Seconds 2147483 }'
-    ]
-
-    if ((await exec.exec('docker', args, options)) !== 0) {
+    try {
+        const container_id = await create_and_start_container(
+            client,
+            image,
+            github_workspace,
+            CONTAINER_WORKSPACE,
+            isolation,
+            os.availableParallelism(),
+            Math.round(os.totalmem() * 0.8)
+        )
+        core.setOutput('container_id', container_id)
+        core.endGroup()
+        return container_id
+    } catch {
         core.setFailed(`Failed to run Docker container from image: ${image}`)
         core.endGroup()
         return ''
     }
-    container_id = container_id.trim()
-    core.setOutput('container_id', container_id)
-    core.endGroup()
-    return container_id
 }
 
 async function setup_container_wrappers(path_dir: string, container_id: string): Promise<void> {
@@ -163,6 +140,7 @@ async function setup_container_wrappers(path_dir: string, container_id: string):
 }
 
 async function run(): Promise<void> {
+    let dockerClient: ActionDockerClient | null = null
     try {
         if (process.platform !== 'win32') {
             core.setFailed('This action can only be run on Windows runners.')
@@ -179,6 +157,8 @@ async function run(): Promise<void> {
             return
         }
 
+        dockerClient = await create_docker_client()
+
         const path_dir = path.join(temp_dir, 'container-wrapper')
         fs.mkdirSync(path_dir, { recursive: true })
         const container_id_store = path.join(path_dir, '.container_id')
@@ -190,17 +170,17 @@ async function run(): Promise<void> {
             const container_id = fs.readFileSync(container_id_store, 'utf-8').trim()
             if (container_id) {
                 core.info(`Attempting to stop existing container with ID: ${container_id}`)
-                await exec.exec('docker', ['stop', '-t', '10', container_id])
+                await stop_container(dockerClient, container_id, 10)
             }
             fs.rmSync(path_dir, { recursive: true, force: true })
             fs.mkdirSync(path_dir, { recursive: true })
         }
 
-        const final_image = await docker_pull(image)
+        const final_image = await docker_pull(dockerClient, image)
         if (!final_image) {
             return
         }
-        const container_id = await docker_run(final_image)
+        const container_id = await docker_run(dockerClient, final_image)
         if (!container_id) {
             return
         }
@@ -212,6 +192,10 @@ async function run(): Promise<void> {
             core.setFailed(error.message)
         } else {
             core.setFailed(String(error))
+        }
+    } finally {
+        if (dockerClient) {
+            await close_docker_client(dockerClient)
         }
     }
 }

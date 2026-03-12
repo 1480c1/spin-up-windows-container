@@ -1,4 +1,4 @@
-import { w as warning, i as info, a as startGroup, e as exec, b as endGroup } from './core-DLBmXFts.js';
+import { w as warning, i as info, d as startGroup, c as create_docker_client, a as stop_container, b as close_docker_client, e as endGroup } from './docker-client-eesSGNkd.js';
 import path from 'node:path';
 import process from 'node:process';
 import fs__default from 'node:fs';
@@ -13,8 +13,13 @@ import 'tls';
 import 'events';
 import 'assert';
 import 'util';
-import 'node:assert';
+import 'string_decoder';
+import 'child_process';
+import 'timers';
 import 'node:net';
+import 'node:os';
+import 'node:tls';
+import 'node:assert';
 import 'node:http';
 import 'node:stream';
 import 'node:buffer';
@@ -22,7 +27,6 @@ import 'node:util';
 import 'node:querystring';
 import 'node:events';
 import 'node:diagnostics_channel';
-import 'node:tls';
 import 'node:zlib';
 import 'node:perf_hooks';
 import 'node:util/types';
@@ -31,11 +35,10 @@ import 'node:url';
 import 'node:async_hooks';
 import 'node:console';
 import 'node:dns';
-import 'string_decoder';
-import 'child_process';
-import 'timers';
+import 'node:stream/web';
 
 async function run() {
+    let dockerClient = null;
     const temp_dir = process.env.RUNNER_TEMP;
     if (!temp_dir) {
         warning('RUNNER_TEMP environment variable is not set. Skipping cleanup.');
@@ -54,11 +57,18 @@ async function run() {
         return;
     }
     startGroup(`Cleaning up Docker container with ID: ${container_id}`);
-    if ((await exec('docker', ['stop', '-t', '10', container_id])) !== 0) {
+    try {
+        dockerClient = await create_docker_client();
+        await stop_container(dockerClient, container_id, 10);
+        info(`Successfully stopped Docker container with ID: ${container_id}`);
+    }
+    catch {
         warning(`Failed to stop Docker container with ID: ${container_id}`);
     }
-    else {
-        info(`Successfully stopped Docker container with ID: ${container_id}`);
+    finally {
+        if (dockerClient) {
+            await close_docker_client(dockerClient);
+        }
     }
     fs__default.rmSync(path_dir, { recursive: true, force: true });
     endGroup();
