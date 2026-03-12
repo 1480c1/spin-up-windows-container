@@ -45,7 +45,8 @@ export const wrapper = (
     shell: Shell,
     container_id: string,
     container_workspace: string,
-    helper_script_path: string
+    helper_script_path: string,
+    node_executable_path: string
 ): string => {
     const [gen, suffix] = get_shell_info(shell)
     const script_path = `${container_workspace}\\%~nx1.${suffix}`
@@ -53,7 +54,7 @@ export const wrapper = (
 @echo off
 setlocal enabledelayedexpansion
 ${gen('%1', `%GITHUB_WORKSPACE%\\%~nx1.${suffix}`)}
-node "${helper_script_path}" --container-id "${container_id}" --shell-name "${shell_name}" --script-path "${script_path}" --host-workspace "%GITHUB_WORKSPACE%"
+"${node_executable_path}" "${helper_script_path}" --container-id "${container_id}" --shell-name "${shell_name}" --script-path "${script_path}" --host-workspace "%GITHUB_WORKSPACE%"
 set "EXIT_CODE=%ERRORLEVEL%"
 exit /b %EXIT_CODE%
 `.replaceAll('\n', '\r\n')

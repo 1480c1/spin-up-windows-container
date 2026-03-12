@@ -126,7 +126,8 @@ async function setup_container_wrappers(path_dir: string, container_id: string):
             shell_command,
             container_id,
             CONTAINER_WORKSPACE,
-            helper_script_path
+            helper_script_path,
+            process.execPath
         )
         const wrapper_path = path.join(path_dir, `${shell_name}-in-container.cmd`)
         core.info(`Creating wrapper for ${shell_name} at ${wrapper_path} with ${shell_command}`)

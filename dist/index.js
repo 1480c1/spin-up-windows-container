@@ -74,14 +74,14 @@ function get_shell_info(shell) {
             return [defaultGen, 'cmd'];
     }
 }
-const wrapper = (shell_name, shell, container_id, container_workspace, helper_script_path) => {
+const wrapper = (shell_name, shell, container_id, container_workspace, helper_script_path, node_executable_path) => {
     const [gen, suffix] = get_shell_info(shell);
     const script_path = `${container_workspace}\\%~nx1.${suffix}`;
     return `
 @echo off
 setlocal enabledelayedexpansion
 ${gen('%1', `%GITHUB_WORKSPACE%\\%~nx1.${suffix}`)}
-node "${helper_script_path}" --container-id "${container_id}" --shell-name "${shell_name}" --script-path "${script_path}" --host-workspace "%GITHUB_WORKSPACE%"
+"${node_executable_path}" "${helper_script_path}" --container-id "${container_id}" --shell-name "${shell_name}" --script-path "${script_path}" --host-workspace "%GITHUB_WORKSPACE%"
 set "EXIT_CODE=%ERRORLEVEL%"
 exit /b %EXIT_CODE%
 `.replaceAll('\n', '\r\n');
@@ -166,7 +166,7 @@ async function setup_container_wrappers(path_dir, container_id) {
     const helper_script_path = path.join(runtime_dir, 'container-exec.js');
     // Generate wrapper scripts for each shell
     for (const [shell_name, shell_command] of Object.entries(Shell)) {
-        const wrapper_content = wrapper(shell_name, shell_command, container_id, CONTAINER_WORKSPACE, helper_script_path);
+        const wrapper_content = wrapper(shell_name, shell_command, container_id, CONTAINER_WORKSPACE, helper_script_path, process.execPath);
         const wrapper_path = path.join(path_dir, `${shell_name}-in-container.cmd`);
         info(`Creating wrapper for ${shell_name} at ${wrapper_path} with ${shell_command}`);
         fs.writeFileSync(wrapper_path, wrapper_content);

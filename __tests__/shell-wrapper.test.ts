@@ -8,6 +8,7 @@ beforeAll(async () => {
 
 describe('shell-wrapper', () => {
     const helperScript = 'C:\\action\\dist\\container-exec.js'
+    const nodePath = 'C:\\hostedtoolcache\\windows\\node\\24.0.0\\x64\\node.exe'
 
     test('builds a wrapper script with expected helper command and CRLF line endings', () => {
         const script = shellWrapper.wrapper(
@@ -15,12 +16,13 @@ describe('shell-wrapper', () => {
             shellWrapper.Shell.powershell,
             'container-123',
             shellWrapper.CONTAINER_WORKSPACE,
-            helperScript
+            helperScript,
+            nodePath
         )
 
         expect(script).toContain('\r\n')
         expect(script).toContain(
-            `node "${helperScript}" --container-id "container-123" --shell-name "powershell"`
+            `"${nodePath}" "${helperScript}" --container-id "container-123" --shell-name "powershell"`
         )
         expect(script).toContain('--host-workspace "%GITHUB_WORKSPACE%"')
     })
@@ -40,7 +42,8 @@ describe('shell-wrapper', () => {
             shellWrapper.Shell.cmd,
             'container-xyz',
             shellWrapper.CONTAINER_WORKSPACE,
-            helperScript
+            helperScript,
+            nodePath
         )
 
         expect(script).toContain('--shell-name "cmd"')
