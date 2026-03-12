@@ -2,29 +2,6 @@ import { DockerClient } from '@docker/node-sdk'
 
 export type ActionDockerClient = DockerClient
 
-type PullImageReference = {
-    fromImage: string
-    tag?: string
-}
-
-function parse_image_for_pull(image: string): PullImageReference {
-    const digestIndex = image.indexOf('@')
-    if (digestIndex !== -1) {
-        return { fromImage: image }
-    }
-
-    const colonIndex = image.lastIndexOf(':')
-    const slashIndex = image.lastIndexOf('/')
-    if (colonIndex > slashIndex) {
-        return {
-            fromImage: image.slice(0, colonIndex),
-            tag: image.slice(colonIndex + 1)
-        }
-    }
-
-    return { fromImage: image }
-}
-
 export async function create_docker_client(): Promise<ActionDockerClient> {
     const client = await DockerClient.fromDockerConfig()
     await client.systemPing()
@@ -47,9 +24,7 @@ export async function get_image_os_version(
 }
 
 export async function pull_image(client: ActionDockerClient, image: string): Promise<void> {
-    const reference = parse_image_for_pull(image)
-    const pullStream = client.imageCreate(reference)
-    await pullStream.wait()
+    await client.imageCreate({ fromImage: image }).wait()
 }
 
 export async function image_exists_locally(
