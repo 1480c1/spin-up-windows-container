@@ -1,10 +1,7 @@
 import { Writable } from 'node:stream'
 import process from 'node:process'
-import {
-    close_docker_client,
-    create_docker_client,
-    type ActionDockerClient
-} from './docker-client.js'
+import { fileURLToPath } from 'node:url'
+import { closeDockerClient, createDockerClient, type ActionDockerClient } from './docker-client.js'
 
 type CliArgs = {
     containerId: string
@@ -13,7 +10,7 @@ type CliArgs = {
     hostWorkspace: string
 }
 
-function parse_args(argv: string[]): CliArgs {
+function parseArgs(argv: string[]): CliArgs {
     const args = new Map<string, string>()
     for (let i = 0; i < argv.length; i += 2) {
         const key = argv[i]
@@ -40,7 +37,7 @@ function parse_args(argv: string[]): CliArgs {
     }
 }
 
-function parse_env_lines(envOutput: string): Map<string, string> {
+function parseEnvLines(envOutput: string): Map<string, string> {
     const env = new Map<string, string>()
     for (const line of envOutput.split(/\r?\n/)) {
         if (!line) {
@@ -57,7 +54,7 @@ function parse_env_lines(envOutput: string): Map<string, string> {
     return env
 }
 
-function build_shell_command(shellName: string, scriptPath: string): string[] {
+function buildShellCommand(shellName: string, scriptPath: string): string[] {
     switch (shellName) {
         case 'bash':
             return ['bash', '--noprofile', '--norc', '-eo', 'pipefail', scriptPath]
@@ -74,7 +71,7 @@ function build_shell_command(shellName: string, scriptPath: string): string[] {
     }
 }
 
-async function get_command_output(
+async function getCommandOutput(
     client: ActionDockerClient,
     containerId: string,
     cmd: string[]
@@ -97,27 +94,76 @@ async function get_command_output(
     return output
 }
 
-function build_exec_env(
+/** System environment variables that must never be overridden from the host. */
+const BLOCKED_VARS = new Set([
+    'PATH',
+    'PATHEXT',
+    'APPDATA',
+    'LOCALAPPDATA',
+    'PROGRAMDATA',
+    'PROGRAMFILES',
+    'PROGRAMFILES(X86)',
+    'COMMONPROGRAMFILES',
+    'COMMONPROGRAMFILES(X86)',
+    'SYSTEMDRIVE',
+    'SYSTEMROOT',
+    'WINDIR',
+    'COMSPEC',
+    'TEMP',
+    'TMP',
+    'USERPROFILE',
+    'USERNAME',
+    'USERDOMAIN',
+    'HOMEDRIVE',
+    'HOMEPATH',
+    'PSMODULEPATH',
+    'NUMBER_OF_PROCESSORS',
+    'PROCESSOR_ARCHITECTURE',
+    'PROCESSOR_IDENTIFIER',
+    'PROCESSOR_LEVEL',
+    'PROCESSOR_REVISION',
+    'OS'
+])
+
+/** Prefixes for environment variables that should always be forwarded from the host. */
+const OVERRIDE_PREFIXES = ['GITHUB_', 'RUNNER_', 'ACTIONS_']
+
+const DRIVE_LETTER_RE = /^[A-Za-z]:/
+
+export function buildExecEnv(
     hostWorkspace: string,
     containerVars: Map<string, string>
 ): { env: string[]; containerWorkspace: string } {
     const containerWorkspace = containerVars.get('GITHUB_WORKSPACE') || ''
     const env: string[] = []
-    const oldPathFwd = hostWorkspace.replaceAll('\\', '/')
-    const newPathFwd = containerWorkspace.replaceAll('\\', '/')
+
+    // Extract the host drive letter (e.g. "D") for rewriting.
+    const hostDrive = DRIVE_LETTER_RE.test(hostWorkspace) ? hostWorkspace[0] : ''
 
     for (const [name, value] of Object.entries(process.env)) {
-        if (!value || name.toUpperCase() === 'PATH') {
-            continue
-        }
-        if (containerVars.has(name.toUpperCase())) {
-            continue
+        if (!value) continue
+
+        const upper = name.toUpperCase()
+
+        // Always block system-critical variables.
+        if (BLOCKED_VARS.has(upper)) continue
+
+        // For variables already in the container: only forward if they
+        // match an override prefix (job-critical vars that may change between steps).
+        if (containerVars.has(upper)) {
+            const shouldOverride = OVERRIDE_PREFIXES.some((prefix) => upper.startsWith(prefix))
+            if (!shouldOverride) continue
         }
 
+        // Rewrite drive letters: D:\ → C:\ and D:/ → C:/
         let rewritten = value
-        if (hostWorkspace && containerWorkspace) {
-            rewritten = rewritten.split(hostWorkspace).join(containerWorkspace)
-            rewritten = rewritten.split(oldPathFwd).join(newPathFwd)
+        if (hostDrive) {
+            rewritten = rewritten.split(`${hostDrive}:\\`).join('C:\\')
+            rewritten = rewritten.split(`${hostDrive}:/`).join('C:/')
+            // Also handle lowercase drive letter
+            const lowerDrive = hostDrive.toLowerCase()
+            rewritten = rewritten.split(`${lowerDrive}:\\`).join('C:\\')
+            rewritten = rewritten.split(`${lowerDrive}:/`).join('C:/')
         }
 
         env.push(`${name}=${rewritten}`)
@@ -132,11 +178,12 @@ function build_exec_env(
 
 async function run(): Promise<void> {
     let dockerClient: ActionDockerClient | null = null
+    let args: CliArgs | undefined
     try {
-        const args = parse_args(process.argv.slice(2))
-        dockerClient = await create_docker_client()
+        args = parseArgs(process.argv.slice(2))
+        dockerClient = await createDockerClient()
 
-        const setOutput = await get_command_output(dockerClient, args.containerId, [
+        const setOutput = await getCommandOutput(dockerClient, args.containerId, [
             'cmd',
             '/D',
             '/E:ON',
@@ -145,15 +192,15 @@ async function run(): Promise<void> {
             '/C',
             'set'
         ])
-        const containerVars = parse_env_lines(setOutput)
+        const containerVars = parseEnvLines(setOutput)
 
-        const { env, containerWorkspace } = build_exec_env(args.hostWorkspace, containerVars)
+        const { env, containerWorkspace } = buildExecEnv(args.hostWorkspace, containerVars)
         const exec = await dockerClient.containerExec(args.containerId, {
             AttachStdout: true,
             AttachStderr: true,
             Env: env,
             WorkingDir: containerWorkspace || undefined,
-            Cmd: build_shell_command(args.shellName, args.scriptPath)
+            Cmd: buildShellCommand(args.shellName, args.scriptPath)
         })
 
         await dockerClient.execStart(exec.Id, process.stdout, process.stderr, {
@@ -164,13 +211,23 @@ async function run(): Promise<void> {
         process.exit(inspect.ExitCode ?? 1)
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        process.stderr.write(`${message}\n`)
+        const context = args
+            ? `Failed to execute command in container '${args.containerId}' (shell: ${args.shellName})`
+            : 'Failed to execute container command'
+        process.stderr.write(`${context}: ${message}\n`)
         process.exit(1)
     } finally {
         if (dockerClient) {
-            await close_docker_client(dockerClient)
+            await closeDockerClient(dockerClient)
         }
     }
 }
 
-run()
+// Only execute when this module is the entry point (not when imported in tests).
+const isMain =
+    process.argv[1] &&
+    fileURLToPath(import.meta.url).replace(/\.[jt]s$/, '') ===
+        process.argv[1].replace(/\.[jt]s$/, '')
+if (isMain) {
+    run()
+}

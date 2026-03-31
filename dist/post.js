@@ -1,8 +1,8 @@
-import { w as warning, i as info, a as startGroup, e as endGroup } from './core-CxI4fOvG.js';
+import { w as warning, i as info, a as startGroup, e as endGroup } from './core-BVPvmuQY.js';
 import path from 'node:path';
 import process from 'node:process';
 import fs__default from 'node:fs';
-import { c as create_docker_client, s as stop_container, a as close_docker_client } from './docker-client-B4BHouVy.js';
+import { c as createDockerClient, s as stopContainer, a as closeDockerClient } from './docker-client-k4oheuFb.js';
 import 'os';
 import 'crypto';
 import 'fs';
@@ -41,38 +41,38 @@ import 'node:fs/promises';
 
 async function run() {
     let dockerClient = null;
-    const temp_dir = process.env.RUNNER_TEMP;
-    if (!temp_dir) {
+    const tempDir = process.env.RUNNER_TEMP;
+    if (!tempDir) {
         warning('RUNNER_TEMP environment variable is not set. Skipping cleanup.');
         return;
     }
-    const path_dir = path.join(temp_dir, 'container-wrapper');
-    const container_id_store = path.join(path_dir, '.container_id');
-    if (!fs__default.existsSync(container_id_store)) {
+    const pathDir = path.join(tempDir, 'container-wrapper');
+    const containerIdStore = path.join(pathDir, '.container_id');
+    if (!fs__default.existsSync(containerIdStore)) {
         info('No container ID file found. No cleanup necessary.');
         return;
     }
-    const container_id = fs__default.readFileSync(container_id_store, 'utf-8').trim();
-    if (!container_id) {
-        fs__default.rmSync(path_dir, { recursive: true, force: true });
+    const containerId = fs__default.readFileSync(containerIdStore, 'utf-8').trim();
+    if (!containerId) {
+        fs__default.rmSync(pathDir, { recursive: true, force: true });
         warning('Container ID file is empty. Skipping cleanup.');
         return;
     }
-    startGroup(`Cleaning up Docker container with ID: ${container_id}`);
+    startGroup(`Cleaning up Docker container with ID: ${containerId}`);
     try {
-        dockerClient = await create_docker_client();
-        await stop_container(dockerClient, container_id, 10);
-        info(`Successfully stopped Docker container with ID: ${container_id}`);
+        dockerClient = await createDockerClient();
+        await stopContainer(dockerClient, containerId, 10);
+        info(`Successfully stopped Docker container with ID: ${containerId}`);
     }
-    catch {
-        warning(`Failed to stop Docker container with ID: ${container_id}`);
+    catch (error) {
+        warning(`Failed to stop Docker container '${containerId}': ${error instanceof Error ? error.message : error}`);
     }
     finally {
         if (dockerClient) {
-            await close_docker_client(dockerClient);
+            await closeDockerClient(dockerClient);
         }
     }
-    fs__default.rmSync(path_dir, { recursive: true, force: true });
+    fs__default.rmSync(pathDir, { recursive: true, force: true });
     endGroup();
 }
 run();

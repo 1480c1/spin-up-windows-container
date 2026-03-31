@@ -1,6 +1,7 @@
 import { Writable } from 'node:stream';
 import process from 'node:process';
-import { c as create_docker_client, a as close_docker_client } from './docker-client-B4BHouVy.js';
+import { fileURLToPath } from 'node:url';
+import { c as createDockerClient, a as closeDockerClient } from './docker-client-k4oheuFb.js';
 import 'node:net';
 import 'node:fs';
 import 'node:path';
@@ -17,7 +18,6 @@ import 'node:zlib';
 import 'node:perf_hooks';
 import 'node:util/types';
 import 'node:worker_threads';
-import 'node:url';
 import 'node:async_hooks';
 import 'node:console';
 import 'node:dns';
@@ -25,7 +25,7 @@ import 'string_decoder';
 import 'node:stream/web';
 import 'node:fs/promises';
 
-function parse_args(argv) {
+function parseArgs(argv) {
     const args = new Map();
     for (let i = 0; i < argv.length; i += 2) {
         const key = argv[i];
@@ -49,7 +49,7 @@ function parse_args(argv) {
         hostWorkspace
     };
 }
-function parse_env_lines(envOutput) {
+function parseEnvLines(envOutput) {
     const env = new Map();
     for (const line of envOutput.split(/\r?\n/)) {
         if (!line) {
@@ -65,7 +65,7 @@ function parse_env_lines(envOutput) {
     }
     return env;
 }
-function build_shell_command(shellName, scriptPath) {
+function buildShellCommand(shellName, scriptPath) {
     switch (shellName) {
         case 'bash':
             return ['bash', '--noprofile', '--norc', '-eo', 'pipefail', scriptPath];
@@ -81,7 +81,7 @@ function build_shell_command(shellName, scriptPath) {
             throw new Error(`Unsupported shell: ${shellName}`);
     }
 }
-async function get_command_output(client, containerId, cmd) {
+async function getCommandOutput(client, containerId, cmd) {
     const exec = await client.containerExec(containerId, {
         AttachStdout: true,
         AttachStderr: true,
@@ -97,22 +97,67 @@ async function get_command_output(client, containerId, cmd) {
     await client.execStart(exec.Id, capture, capture, { Tty: false, Detach: false });
     return output;
 }
-function build_exec_env(hostWorkspace, containerVars) {
+/** System environment variables that must never be overridden from the host. */
+const BLOCKED_VARS = new Set([
+    'PATH',
+    'PATHEXT',
+    'APPDATA',
+    'LOCALAPPDATA',
+    'PROGRAMDATA',
+    'PROGRAMFILES',
+    'PROGRAMFILES(X86)',
+    'COMMONPROGRAMFILES',
+    'COMMONPROGRAMFILES(X86)',
+    'SYSTEMDRIVE',
+    'SYSTEMROOT',
+    'WINDIR',
+    'COMSPEC',
+    'TEMP',
+    'TMP',
+    'USERPROFILE',
+    'USERNAME',
+    'USERDOMAIN',
+    'HOMEDRIVE',
+    'HOMEPATH',
+    'PSMODULEPATH',
+    'NUMBER_OF_PROCESSORS',
+    'PROCESSOR_ARCHITECTURE',
+    'PROCESSOR_IDENTIFIER',
+    'PROCESSOR_LEVEL',
+    'PROCESSOR_REVISION',
+    'OS'
+]);
+/** Prefixes for environment variables that should always be forwarded from the host. */
+const OVERRIDE_PREFIXES = ['GITHUB_', 'RUNNER_', 'ACTIONS_'];
+const DRIVE_LETTER_RE = /^[A-Za-z]:/;
+function buildExecEnv(hostWorkspace, containerVars) {
     const containerWorkspace = containerVars.get('GITHUB_WORKSPACE') || '';
     const env = [];
-    const oldPathFwd = hostWorkspace.replaceAll('\\', '/');
-    const newPathFwd = containerWorkspace.replaceAll('\\', '/');
+    // Extract the host drive letter (e.g. "D") for rewriting.
+    const hostDrive = DRIVE_LETTER_RE.test(hostWorkspace) ? hostWorkspace[0] : '';
     for (const [name, value] of Object.entries(process.env)) {
-        if (!value || name.toUpperCase() === 'PATH') {
+        if (!value)
             continue;
-        }
-        if (containerVars.has(name.toUpperCase())) {
+        const upper = name.toUpperCase();
+        // Always block system-critical variables.
+        if (BLOCKED_VARS.has(upper))
             continue;
+        // For variables already in the container: only forward if they
+        // match an override prefix (job-critical vars that may change between steps).
+        if (containerVars.has(upper)) {
+            const shouldOverride = OVERRIDE_PREFIXES.some((prefix) => upper.startsWith(prefix));
+            if (!shouldOverride)
+                continue;
         }
+        // Rewrite drive letters: D:\ → C:\ and D:/ → C:/
         let rewritten = value;
-        if (hostWorkspace && containerWorkspace) {
-            rewritten = rewritten.split(hostWorkspace).join(containerWorkspace);
-            rewritten = rewritten.split(oldPathFwd).join(newPathFwd);
+        if (hostDrive) {
+            rewritten = rewritten.split(`${hostDrive}:\\`).join('C:\\');
+            rewritten = rewritten.split(`${hostDrive}:/`).join('C:/');
+            // Also handle lowercase drive letter
+            const lowerDrive = hostDrive.toLowerCase();
+            rewritten = rewritten.split(`${lowerDrive}:\\`).join('C:\\');
+            rewritten = rewritten.split(`${lowerDrive}:/`).join('C:/');
         }
         env.push(`${name}=${rewritten}`);
     }
@@ -123,10 +168,11 @@ function build_exec_env(hostWorkspace, containerVars) {
 }
 async function run() {
     let dockerClient = null;
+    let args;
     try {
-        const args = parse_args(process.argv.slice(2));
-        dockerClient = await create_docker_client();
-        const setOutput = await get_command_output(dockerClient, args.containerId, [
+        args = parseArgs(process.argv.slice(2));
+        dockerClient = await createDockerClient();
+        const setOutput = await getCommandOutput(dockerClient, args.containerId, [
             'cmd',
             '/D',
             '/E:ON',
@@ -135,14 +181,14 @@ async function run() {
             '/C',
             'set'
         ]);
-        const containerVars = parse_env_lines(setOutput);
-        const { env, containerWorkspace } = build_exec_env(args.hostWorkspace, containerVars);
+        const containerVars = parseEnvLines(setOutput);
+        const { env, containerWorkspace } = buildExecEnv(args.hostWorkspace, containerVars);
         const exec = await dockerClient.containerExec(args.containerId, {
             AttachStdout: true,
             AttachStderr: true,
             Env: env,
             WorkingDir: containerWorkspace || undefined,
-            Cmd: build_shell_command(args.shellName, args.scriptPath)
+            Cmd: buildShellCommand(args.shellName, args.scriptPath)
         });
         await dockerClient.execStart(exec.Id, process.stdout, process.stderr, {
             Tty: false,
@@ -153,14 +199,25 @@ async function run() {
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`${message}\n`);
+        const context = args
+            ? `Failed to execute command in container '${args.containerId}' (shell: ${args.shellName})`
+            : 'Failed to execute container command';
+        process.stderr.write(`${context}: ${message}\n`);
         process.exit(1);
     }
     finally {
         if (dockerClient) {
-            await close_docker_client(dockerClient);
+            await closeDockerClient(dockerClient);
         }
     }
 }
-run();
+// Only execute when this module is the entry point (not when imported in tests).
+const isMain = process.argv[1] &&
+    fileURLToPath(import.meta.url).replace(/\.[jt]s$/, '') ===
+        process.argv[1].replace(/\.[jt]s$/, '');
+if (isMain) {
+    run();
+}
+
+export { buildExecEnv };
 //# sourceMappingURL=container-exec.js.map

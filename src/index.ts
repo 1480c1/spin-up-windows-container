@@ -5,18 +5,93 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import {
-    close_docker_client,
-    create_and_start_container,
-    create_docker_client,
-    get_image_os_version,
-    image_exists_locally,
-    pull_image,
-    stop_container,
+    closeDockerClient,
+    createAndStartContainer,
+    createDockerClient,
+    getImageOsVersion,
+    imageExistsLocally,
+    pullImage,
+    stopContainer,
     type ActionDockerClient
 } from './docker-client.js'
-import { CONTAINER_WORKSPACE, Shell, wrapper } from './shell-wrapper.js'
+import { Shell, wrapper } from './shell-wrapper.js'
 
-async function can_use_proc_isolation(
+const DRIVE_LETTER_RE = /^[A-Za-z]:[\\/]/
+
+/**
+ * Replace the drive letter in a Windows path with C so the path is
+ * usable inside a Windows container (only C:\ is guaranteed).
+ */
+export function normalizeWindowsContainerDestinationPath(p: string): string {
+    if (DRIVE_LETTER_RE.test(p)) {
+        return 'C' + p.slice(1)
+    }
+    return p
+}
+
+/** Environment variables whose values are file paths we need to bind-mount. */
+const GITHUB_PATH_VARS = [
+    'GITHUB_OUTPUT',
+    'GITHUB_ENV',
+    'GITHUB_PATH',
+    'GITHUB_STEP_SUMMARY'
+] as const
+
+export function getEnvAndBinds(): {
+    binds: string[]
+    env: string[]
+    containerWorkspace: string
+} {
+    const workspace = process.env.GITHUB_WORKSPACE
+    if (!workspace) {
+        throw new Error('GITHUB_WORKSPACE environment variable is not set.')
+    }
+
+    const containerWorkspace = normalizeWindowsContainerDestinationPath(workspace)
+
+    // Collect unique host directories we need to bind-mount.
+    const hostDirs = new Set<string>()
+    hostDirs.add(workspace)
+
+    const runnerTemp = process.env.RUNNER_TEMP
+    if (runnerTemp) {
+        hostDirs.add(runnerTemp)
+    }
+
+    for (const varName of GITHUB_PATH_VARS) {
+        const value = process.env[varName]
+        if (value) {
+            hostDirs.add(path.dirname(value))
+        }
+    }
+
+    // De-duplicate: remove any dir that is a subdirectory of another.
+    const sorted = [...hostDirs].sort((a, b) => a.length - b.length)
+    const roots: string[] = []
+    for (const dir of sorted) {
+        const normalizedDir = dir.toLowerCase().replaceAll('/', '\\')
+        const isChild = roots.some((root) => {
+            const normalizedRoot = root.toLowerCase().replaceAll('/', '\\')
+            return (
+                normalizedDir.startsWith(normalizedRoot + '\\\\') ||
+                normalizedDir === normalizedRoot
+            )
+        })
+        if (!isChild) {
+            roots.push(dir)
+        }
+    }
+
+    const binds = roots.map(
+        (hostDir) => `${hostDir}:${normalizeWindowsContainerDestinationPath(hostDir)}`
+    )
+
+    const env = [`GITHUB_WORKSPACE=${containerWorkspace}`]
+
+    return { binds, env, containerWorkspace }
+}
+
+async function canUseProcIsolation(
     client: ActionDockerClient,
     imageName: string
 ): Promise<boolean> {
@@ -26,7 +101,7 @@ async function can_use_proc_isolation(
         const hostBuild = parseInt(hostBuildStr.split('.')[2])
 
         // 2. Get Image OS Version via Docker API
-        const imageOsVersion = await get_image_os_version(client, imageName)
+        const imageOsVersion = await getImageOsVersion(client, imageName)
 
         // Image version format is usually "10.0.26100.4061" - we need the 3rd segment
         const imageBuild = parseInt(imageOsVersion.split('.')[2])
@@ -60,81 +135,112 @@ async function can_use_proc_isolation(
     return false
 }
 
-async function docker_pull(client: ActionDockerClient, image: string): Promise<string | null> {
+async function dockerPull(client: ActionDockerClient, image: string): Promise<string | null> {
     core.startGroup(`Pulling Docker image: ${image}`)
     try {
-        await pull_image(client, image)
+        await pullImage(client, image)
         core.info(`Successfully pulled Docker image: ${image}`)
         core.endGroup()
         return image
-    } catch {
-        // Continue to local image fallback check.
+    } catch (pullError) {
+        core.warning(
+            `Failed to pull Docker image '${image}': ${pullError instanceof Error ? pullError.message : pullError}. Checking for local copy…`
+        )
     }
 
-    if (await image_exists_locally(client, image)) {
-        core.info(`Using pre-existing Docker image: ${image}`)
-        core.endGroup()
-        return image
+    try {
+        if (await imageExistsLocally(client, image)) {
+            core.info(`Using pre-existing local Docker image: ${image}`)
+            core.endGroup()
+            return image
+        }
+    } catch (inspectError) {
+        core.warning(
+            `Failed to inspect local image '${image}': ${inspectError instanceof Error ? inspectError.message : inspectError}`
+        )
     }
-    core.setFailed(`Docker image not found locally: ${image}`)
+    core.setFailed(
+        `Docker image '${image}' could not be pulled and was not found locally. Ensure the image name is correct and that the Docker daemon is running.`
+    )
     core.endGroup()
     return null
 }
 
-async function docker_run(client: ActionDockerClient, image: string): Promise<string> {
+async function dockerRun(
+    client: ActionDockerClient,
+    image: string
+): Promise<{ containerId: string; containerWorkspace: string }> {
     core.startGroup(`Running Docker container from image: ${image}`)
-    const github_workspace = process.env.GITHUB_WORKSPACE
-    if (!github_workspace) {
-        core.setFailed('GITHUB_WORKSPACE environment variable is not set.')
+
+    let envAndBinds: ReturnType<typeof getEnvAndBinds>
+    try {
+        envAndBinds = getEnvAndBinds()
+    } catch (error) {
+        core.setFailed(
+            `Failed to compute container bindings: ${error instanceof Error ? error.message : error}`
+        )
         core.endGroup()
-        return ''
+        return { containerId: '', containerWorkspace: '' }
     }
 
-    const isolation = (await can_use_proc_isolation(client, image)) ? 'process' : 'hyperv'
+    const { binds, env, containerWorkspace } = envAndBinds
+    core.info(`Container workspace: ${containerWorkspace}`)
+    for (const bind of binds) {
+        core.info(`Bind mount: ${bind}`)
+    }
+
+    const isolation = (await canUseProcIsolation(client, image)) ? 'process' : 'hyperv'
     core.info(`Using ${isolation} isolation for container.`)
 
     try {
-        const container_id = await create_and_start_container(
+        const containerId = await createAndStartContainer(
             client,
             image,
-            github_workspace,
-            CONTAINER_WORKSPACE,
+            binds,
+            env,
+            containerWorkspace,
             isolation,
             os.availableParallelism(),
             Math.round(os.totalmem() * 0.8)
         )
-        core.setOutput('container_id', container_id)
+        core.setOutput('container_id', containerId)
         core.endGroup()
-        return container_id
-    } catch {
-        core.setFailed(`Failed to run Docker container from image: ${image}`)
+        return { containerId, containerWorkspace }
+    } catch (error) {
+        core.setFailed(
+            `Failed to create/start container from image '${image}': ${error instanceof Error ? error.message : error}`
+        )
         core.endGroup()
-        return ''
+        return { containerId: '', containerWorkspace: '' }
     }
 }
 
-async function setup_container_wrappers(path_dir: string, container_id: string): Promise<void> {
-    core.startGroup(`Setting up wrapper with ID: ${container_id}`)
+async function setupContainerWrappers(
+    pathDir: string,
+    containerId: string,
+    containerWorkspace: string
+): Promise<void> {
+    core.startGroup(`Setting up wrapper with ID: ${containerId}`)
 
-    const runtime_dir = path.dirname(fileURLToPath(import.meta.url))
-    const helper_script_path = path.join(runtime_dir, 'container-exec.js')
+    const runtimeDir = path.dirname(fileURLToPath(import.meta.url))
+    const helperScriptPath = path.join(runtimeDir, 'container-exec.js')
 
     // Generate wrapper scripts for each shell
-    for (const [shell_name, shell_command] of Object.entries(Shell)) {
-        const wrapper_content = wrapper(
-            shell_name,
-            shell_command,
-            container_id,
-            CONTAINER_WORKSPACE,
-            helper_script_path,
+    for (const [shellName, shellCommand] of Object.entries(Shell)) {
+        const wrapperContent = wrapper(
+            shellName,
+            shellCommand,
+            containerId,
+            containerWorkspace,
+            helperScriptPath,
             process.execPath
         )
-        const wrapper_path = path.join(path_dir, `${shell_name}-in-container.cmd`)
-        core.info(`Creating wrapper for ${shell_name} at ${wrapper_path} with ${shell_command}`)
-        fs.writeFileSync(wrapper_path, wrapper_content)
+        const wrapperPath = path.join(pathDir, `${shellName}-in-container.cmd`)
+        core.info(`Creating wrapper for ${shellName} at ${wrapperPath} with ${shellCommand}`)
+        fs.writeFileSync(wrapperPath, wrapperContent)
     }
 
-    core.addPath(path_dir)
+    core.addPath(pathDir)
     core.endGroup()
 }
 
@@ -145,8 +251,8 @@ async function run(): Promise<void> {
             core.setFailed('This action can only be run on Windows runners.')
             return
         }
-        const temp_dir = process.env.RUNNER_TEMP
-        if (!temp_dir) {
+        const tempDir = process.env.RUNNER_TEMP
+        if (!tempDir) {
             core.setFailed('RUNNER_TEMP environment variable is not set.')
             return
         }
@@ -156,36 +262,36 @@ async function run(): Promise<void> {
             return
         }
 
-        dockerClient = await create_docker_client()
+        dockerClient = await createDockerClient()
 
-        const path_dir = path.join(temp_dir, 'container-wrapper')
-        fs.mkdirSync(path_dir, { recursive: true })
-        const container_id_store = path.join(path_dir, '.container_id')
+        const pathDir = path.join(tempDir, 'container-wrapper')
+        fs.mkdirSync(pathDir, { recursive: true })
+        const containerIdStore = path.join(pathDir, '.container_id')
 
-        if (fs.existsSync(container_id_store)) {
+        if (fs.existsSync(containerIdStore)) {
             core.warning(
                 'A container ID file already exists. This may indicate that a container is still running from a previous execution. Attempting to clean up before proceeding.'
             )
-            const container_id = fs.readFileSync(container_id_store, 'utf-8').trim()
-            if (container_id) {
-                core.info(`Attempting to stop existing container with ID: ${container_id}`)
-                await stop_container(dockerClient, container_id, 10)
+            const containerId = fs.readFileSync(containerIdStore, 'utf-8').trim()
+            if (containerId) {
+                core.info(`Attempting to stop existing container with ID: ${containerId}`)
+                await stopContainer(dockerClient, containerId, 10)
             }
-            fs.rmSync(path_dir, { recursive: true, force: true })
-            fs.mkdirSync(path_dir, { recursive: true })
+            fs.rmSync(pathDir, { recursive: true, force: true })
+            fs.mkdirSync(pathDir, { recursive: true })
         }
 
-        const final_image = await docker_pull(dockerClient, image)
-        if (!final_image) {
+        const finalImage = await dockerPull(dockerClient, image)
+        if (!finalImage) {
             return
         }
-        const container_id = await docker_run(dockerClient, final_image)
-        if (!container_id) {
+        const { containerId, containerWorkspace } = await dockerRun(dockerClient, finalImage)
+        if (!containerId) {
             return
         }
 
-        fs.writeFileSync(container_id_store, container_id)
-        await setup_container_wrappers(path_dir, container_id)
+        fs.writeFileSync(containerIdStore, containerId)
+        await setupContainerWrappers(pathDir, containerId, containerWorkspace)
     } catch (error: unknown) {
         if (error instanceof Error) {
             core.setFailed(error.message)
@@ -194,9 +300,16 @@ async function run(): Promise<void> {
         }
     } finally {
         if (dockerClient) {
-            await close_docker_client(dockerClient)
+            await closeDockerClient(dockerClient)
         }
     }
 }
 
-run()
+// Only execute when this module is the entry point (not when imported in tests).
+const isMain =
+    process.argv[1] &&
+    fileURLToPath(import.meta.url).replace(/\.[jt]s$/, '') ===
+        process.argv[1].replace(/\.[jt]s$/, '')
+if (isMain) {
+    run()
+}
